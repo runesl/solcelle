@@ -12,11 +12,13 @@ public class LoadProduction {
     private static SimpleDateFormat sdf = new SimpleDateFormat("yyyy-MM-ddHH:mm:ss");
     private static SimpleDateFormat sdf2 = new SimpleDateFormat("dd-MM-yyyyHH");
 
+    public static int[] consumptionMonthWeightsEnfamiliehus = {10,9,9,8,7,6,6,7,8,9,10,11};
+
     public static final int SELF_CONSUMPTION_WATTS = 822;
 
     public static void main(String[] args) throws IOException, ParseException {
         Map<Date, ProductionRecord> productionRecordMap = loadProduction();
-        Map<Date, PriceRecord> prices = loadPrices();
+        Map<Date, PriceRecord> prices = loadPrices2011();
 
         // Calculate value of sold production
         double producedKwh = 0, soldKwh = 0, priceForSold = 0;
@@ -26,7 +28,7 @@ public class LoadProduction {
             soldKwh += productionRecord.getSoldKwh();
             priceForSold += productionRecord.getSoldKwh() * priceRecord.dkkPrKwh;
         }
-        System.out.println("Total production kWh: " + producedKwh + ". Production sold (above " + SELF_CONSUMPTION_WATTS + "W base consumption) kWh: " + soldKwh + " Total price for sold DKK: " + priceForSold + " avg. price DKK/kWh: " + priceForSold / soldKwh);
+        System.out.println("Total production kWh: " + producedKwh + ". Production sold (above " + SELF_CONSUMPTION_WATTS + "W base consumption - weighted after months) kWh: " + soldKwh + " Total price for sold DKK: " + priceForSold + " avg. price DKK/kWh: " + priceForSold / soldKwh);
 
         // Calculate value of bought power.
         double totalBoughtDkk = 0, totalBoughtkWh = 0, selfConsumption = 0;
@@ -35,11 +37,12 @@ public class LoadProduction {
             ProductionRecord productionRecord = productionRecordMap.get(priceRecord.date);
             if (productionRecord != null)
                 producedKwHInHour = productionRecord.power / 1000.0;
-            if (producedKwHInHour > SELF_CONSUMPTION_WATTS / 1000.0) {
-                selfConsumption += SELF_CONSUMPTION_WATTS / 1000.0;
+            double selfConsumptionWatts = getSelfConsumptionWattsForTime(priceRecord.date);
+            if (producedKwHInHour > selfConsumptionWatts / 1000.0) {
+                selfConsumption += selfConsumptionWatts / 1000.0;
                 continue; // No buy, if were making enough
             }
-            double boughtInHour = (SELF_CONSUMPTION_WATTS / 1000.0) - producedKwHInHour;
+            double boughtInHour = (selfConsumptionWatts / 1000.0) - producedKwHInHour;
             selfConsumption += producedKwHInHour;
             totalBoughtkWh += boughtInHour;
             totalBoughtDkk += priceRecord.dkkPrKwh * boughtInHour;
@@ -49,13 +52,32 @@ public class LoadProduction {
         System.out.println("Total power consumption kWh: " + totalConsumption + ". Total consumption of solar power generated in same hour kWh: " + selfConsumption + ". Percentage of total power usage: " + 100 * selfConsumption / totalConsumption);
     }
 
-    private static Map<Date, PriceRecord> loadPrices() throws IOException, ParseException {
+    private static double getSelfConsumptionWattsForTime(Date time){
+        return 1.0 * consumptionMonthWeightsEnfamiliehus[time.getMonth()] / 100*12 * SELF_CONSUMPTION_WATTS;
+    }
+
+    private static Map<Date, PriceRecord> loadPrices2011() throws IOException, ParseException {
         Map<Date, PriceRecord> prices = new TreeMap<Date, PriceRecord>();
-        File in = new File("Elspot Prices_2011_Hourly_DKK.txt");
+        File in = new File("spot2011.txt");
         BufferedReader br = new BufferedReader(new FileReader(in));
         for (String read = br.readLine(); read != null; read = br.readLine()) {
             String[] tokens = read.split("\t");
             Date date = sdf2.parse(tokens[0] + tokens[1]);
+            double dkkPrKwh = Double.parseDouble(tokens[2].replace(",", ".")) / 1000.0;
+            prices.put(date, new PriceRecord(dkkPrKwh, date));
+        }
+        System.out.println("Read " + prices.size() + " prices");
+        return prices;
+    }
+
+    private static Map<Date, PriceRecord> loadPrices2010() throws IOException, ParseException {
+        Map<Date, PriceRecord> prices = new TreeMap<Date, PriceRecord>();
+        File in = new File("spot2010.txt");
+        BufferedReader br = new BufferedReader(new FileReader(in));
+        for (String read = br.readLine(); read != null; read = br.readLine()) {
+            String[] tokens = read.split("\t");
+            Date date = sdf2.parse(tokens[0] + tokens[1]);
+            date.setYear(date.getYear()+1); // Pretend to be data for 2011 in order to correlate with production data.
             double dkkPrKwh = Double.parseDouble(tokens[2].replace(",", ".")) / 1000.0;
             prices.put(date, new PriceRecord(dkkPrKwh, date));
         }
@@ -95,8 +117,9 @@ public class LoadProduction {
         }
 
         public double getSoldKwh() {
-            if (power < SELF_CONSUMPTION_WATTS) return 0;
-            return 1.0 * (power - SELF_CONSUMPTION_WATTS) / 1000.0 / 6;
+            double selfConsumptionWatts = getSelfConsumptionWattsForTime(date);
+            if (power < selfConsumptionWatts) return 0;
+            return 1.0 * (power - selfConsumptionWatts) / 1000.0 / 6;
         }
 
         public double getProducedKwh() {
